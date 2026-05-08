@@ -82,7 +82,13 @@ export function sanitizeIssPosition(value: unknown): IssPosition {
     throw new Error('Malformed ISS position response');
   }
 
-  return { latitude, longitude, timestamp };
+  const velocity = Number(item.velocity);
+  return {
+    latitude,
+    longitude,
+    timestamp,
+    ...(Number.isFinite(velocity) && velocity >= 0 ? { velocity } : {}),
+  };
 }
 
 export function sanitizeAstronauts(value: unknown): Astronaut[] {

@@ -4,6 +4,7 @@ export type IssPosition = {
   latitude: number;
   longitude: number;
   timestamp: number;
+  velocity?: number;
 };
 
 export type Astronaut = {

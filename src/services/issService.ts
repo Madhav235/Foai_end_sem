@@ -6,6 +6,7 @@ type OpenNotifyPositionResponse = {
   message: string;
   timestamp: number;
   iss_position: { latitude: string; longitude: string };
+  velocity?: number;
 };
 
 type PeopleResponse = {
@@ -21,6 +22,7 @@ export async function fetchIssPosition(signal?: AbortSignal): Promise<IssPositio
       latitude: Number(data.iss_position.latitude),
       longitude: Number(data.iss_position.longitude),
       timestamp: data.timestamp,
+      velocity: data.velocity,
     });
   });
 }

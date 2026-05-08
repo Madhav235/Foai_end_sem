@@ -23,7 +23,7 @@ export function useIssPolling() {
 
     if (!issTimer) {
       controller = new AbortController();
-      void refreshIss({ signal: controller.signal, silent: true });
+      void refreshIss();
       void refreshAstronauts(controller.signal);
 
       issTimer = window.setInterval(() => {

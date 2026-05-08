@@ -4,6 +4,7 @@ type WhereIssResponse = {
   latitude?: number;
   longitude?: number;
   timestamp?: number;
+  velocity?: number;
 };
 
 type OpenNotifyResponse = {
@@ -21,6 +22,7 @@ type IssPayload = {
     latitude: string;
     longitude: string;
   };
+  velocity?: number;
 };
 
 const CACHE_TTL_MS = 12_000;
@@ -32,7 +34,7 @@ function validNumber(value: unknown, min: number, max: number) {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 
-function toPayload(latitude: number, longitude: number, timestamp: number): IssPayload {
+function toPayload(latitude: number, longitude: number, timestamp: number, velocity?: number): IssPayload {
   if (!validNumber(latitude, -90, 90) || !validNumber(longitude, -180, 180) || !validNumber(timestamp, 0, Infinity)) {
     throw new Error('Malformed ISS response');
   }
@@ -44,6 +46,7 @@ function toPayload(latitude: number, longitude: number, timestamp: number): IssP
       latitude: String(latitude),
       longitude: String(longitude),
     },
+    ...(typeof velocity === 'number' && Number.isFinite(velocity) && velocity >= 0 ? { velocity } : {}),
   };
 }
 
@@ -52,7 +55,7 @@ async function fetchWhereTheIss() {
   if (response.status === 429) throw new Error('ISS upstream rate limited');
   const data = (await response.json()) as WhereIssResponse;
   if (!response.ok) throw new Error('ISS upstream unavailable');
-  return toPayload(Number(data.latitude), Number(data.longitude), Number(data.timestamp));
+  return toPayload(Number(data.latitude), Number(data.longitude), Number(data.timestamp), Number(data.velocity));
 }
 
 async function fetchOpenNotify() {

@@ -9,6 +9,7 @@ import { sanitizeChatMessages } from '../utils/validation';
 
 const THEME_KEY = 'orbitdesk.theme';
 const CHAT_KEY = 'orbitdesk.chat.messages';
+const ISS_CACHE_KEY = 'orbitdesk.iss.lastKnown';
 const ISS_REFRESH_DEBOUNCE_MS = 5000;
 const ISS_SILENT_MIN_GAP_MS = 12000;
 const NEWS_ERROR_TOAST_COOLDOWN_MS = 15000;
@@ -18,6 +19,8 @@ let lastIssRefreshStartedAt = 0;
 let lastManualIssRefreshAt = 0;
 let newsRefreshInFlight: Promise<void> | null = null;
 let lastNewsErrorToastAt = 0;
+
+type CachedIssState = Pick<IssState, 'current' | 'history' | 'speeds' | 'currentSpeed' | 'nearestLocation' | 'lastUpdated'>;
 
 const initialIss: IssState = {
   current: null,
@@ -38,6 +41,21 @@ const initialNews: NewsState = {
   lastUpdated: null,
   activeCategory: 'All',
 };
+
+function hydrateCachedIss(): IssState {
+  const cached = readStorage<CachedIssState | null>(ISS_CACHE_KEY, null);
+  if (!cached?.current) return initialIss;
+
+  return {
+    ...initialIss,
+    current: cached.current,
+    history: cached.history ?? [cached.current],
+    speeds: cached.speeds ?? [],
+    currentSpeed: cached.currentSpeed ?? cached.current.velocity ?? null,
+    nearestLocation: cached.nearestLocation || nearestLocation(cached.current),
+    lastUpdated: cached.lastUpdated,
+  };
+}
 
 type DashboardStore = {
   theme: Theme;
@@ -62,29 +80,42 @@ function applyTheme(theme: Theme) {
 
 function nextIssState(currentState: IssState, position: IssPosition, astronauts?: Astronaut[]): IssState {
   const previous = currentState.current;
-  const speed = previous ? calculateSpeedKmh(previous, position) : null;
+  const calculatedSpeed = previous ? calculateSpeedKmh(previous, position) : null;
+  const speed = position.velocity ?? calculatedSpeed;
   const history = [...currentState.history, position].slice(-15);
-  const speeds = speed
-    ? [...currentState.speeds, { timestamp: position.timestamp, speed }].slice(-30)
+  const validSpeed = typeof speed === 'number' && Number.isFinite(speed) && speed > 0 ? speed : null;
+  const speeds = validSpeed
+    ? [...currentState.speeds, { timestamp: position.timestamp, speed: validSpeed }].slice(-30)
     : currentState.speeds;
 
-  return {
+  const nextState = {
     ...currentState,
     current: position,
     history,
     speeds,
-    currentSpeed: speed ?? currentState.currentSpeed,
+    currentSpeed: validSpeed ?? currentState.currentSpeed,
     nearestLocation: nearestLocation(position),
     astronauts: astronauts ?? currentState.astronauts,
     loading: false,
     error: null,
     lastUpdated: Date.now(),
   };
+
+  writeStorage<CachedIssState>(ISS_CACHE_KEY, {
+    current: nextState.current,
+    history: nextState.history,
+    speeds: nextState.speeds,
+    currentSpeed: nextState.currentSpeed,
+    nearestLocation: nextState.nearestLocation,
+    lastUpdated: nextState.lastUpdated,
+  });
+
+  return nextState;
 }
 
 export const useDashboardStore = create<DashboardStore>((set, get) => ({
   theme: 'dark',
-  iss: initialIss,
+  iss: hydrateCachedIss(),
   news: initialNews,
   chatMessages: sanitizeChatMessages(readStorage<ChatMessage[]>(CHAT_KEY, [])),
 

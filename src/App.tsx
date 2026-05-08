@@ -26,7 +26,7 @@ export default function App() {
     },
     {
       label: 'ISS speed',
-      value: iss.currentSpeed ? `${Math.round(iss.currentSpeed).toLocaleString()} km/h` : '--',
+      value: typeof iss.currentSpeed === 'number' ? `${Math.round(iss.currentSpeed).toLocaleString()} km/h` : '--',
       icon: Activity,
       accent: 'text-emerald-400',
     },
