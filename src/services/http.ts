@@ -15,8 +15,12 @@ export async function withRetry<T>(request: () => Promise<T>, retries = 2): Prom
       return await request();
     } catch (error) {
       lastError = error;
+      if (axios.isCancel(error) || (error instanceof Error && error.name === 'AbortError')) {
+        throw error;
+      }
       if (attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, 450 * (attempt + 1)));
+        const delay = Math.min(350 * 2 ** attempt, 2200);
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }

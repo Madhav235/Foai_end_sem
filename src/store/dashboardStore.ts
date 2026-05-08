@@ -9,6 +9,15 @@ import { sanitizeChatMessages } from '../utils/validation';
 
 const THEME_KEY = 'orbitdesk.theme';
 const CHAT_KEY = 'orbitdesk.chat.messages';
+const ISS_REFRESH_DEBOUNCE_MS = 5000;
+const ISS_SILENT_MIN_GAP_MS = 12000;
+const NEWS_ERROR_TOAST_COOLDOWN_MS = 15000;
+
+let issRefreshInFlight: Promise<void> | null = null;
+let lastIssRefreshStartedAt = 0;
+let lastManualIssRefreshAt = 0;
+let newsRefreshInFlight: Promise<void> | null = null;
+let lastNewsErrorToastAt = 0;
 
 const initialIss: IssState = {
   current: null,
@@ -94,15 +103,32 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   },
 
   refreshIss: async ({ signal, silent } = {}) => {
-    set((state) => ({ iss: { ...state.iss, loading: !silent, error: null } }));
-    try {
-      const position = await fetchIssPosition(signal);
-      set((state) => ({ iss: nextIssState(state.iss, position) }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to fetch ISS position';
-      set((state) => ({ iss: { ...state.iss, loading: false, error: message } }));
-      if (!silent) toast.error('ISS telemetry unavailable');
+    const now = Date.now();
+    if (issRefreshInFlight) return issRefreshInFlight;
+    if (silent && now - lastIssRefreshStartedAt < ISS_SILENT_MIN_GAP_MS) return;
+    if (!silent && now - lastManualIssRefreshAt < ISS_REFRESH_DEBOUNCE_MS) {
+      toast('ISS refresh is already cooling down');
+      return;
     }
+
+    lastIssRefreshStartedAt = now;
+    if (!silent) lastManualIssRefreshAt = now;
+    set((state) => ({ iss: { ...state.iss, loading: !silent, error: null } }));
+    issRefreshInFlight = (async () => {
+      try {
+        const position = await fetchIssPosition(signal);
+        set((state) => ({ iss: nextIssState(state.iss, position) }));
+      } catch (error) {
+        if (error instanceof Error && error.name === 'CanceledError') return;
+        const message = error instanceof Error ? error.message : 'Unable to fetch ISS position';
+        set((state) => ({ iss: { ...state.iss, loading: false, error: message } }));
+        if (!silent) toast.error('ISS telemetry unavailable. Keeping last known position.');
+      } finally {
+        issRefreshInFlight = null;
+      }
+    })();
+
+    return issRefreshInFlight;
   },
 
   refreshAstronauts: async (signal) => {
@@ -115,17 +141,29 @@ export const useDashboardStore = create<DashboardStore>((set, get) => ({
   },
 
   refreshNews: async ({ signal, force } = {}) => {
+    if (newsRefreshInFlight) return newsRefreshInFlight;
     set((state) => ({ news: { ...state.news, loading: true, error: null } }));
-    try {
-      const articles = await fetchNews({ signal, force });
-      set((state) => ({
-        news: { ...state.news, articles, loading: false, error: null, lastUpdated: Date.now() },
-      }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to fetch news';
-      set((state) => ({ news: { ...state.news, loading: false, error: message } }));
-      toast.error('News feed unavailable');
-    }
+    newsRefreshInFlight = (async () => {
+      try {
+        const articles = await fetchNews({ signal, force });
+        set((state) => ({
+          news: { ...state.news, articles, loading: false, error: null, lastUpdated: Date.now() },
+        }));
+      } catch (error) {
+        if (error instanceof Error && error.name === 'CanceledError') return;
+        const message = error instanceof Error ? error.message : 'Unable to fetch news';
+        set((state) => ({ news: { ...state.news, loading: false, error: message } }));
+        const now = Date.now();
+        if (now - lastNewsErrorToastAt > NEWS_ERROR_TOAST_COOLDOWN_MS) {
+          toast.error('News feed unavailable');
+          lastNewsErrorToastAt = now;
+        }
+      } finally {
+        newsRefreshInFlight = null;
+      }
+    })();
+
+    return newsRefreshInFlight;
   },
 
   refreshAll: async () => {

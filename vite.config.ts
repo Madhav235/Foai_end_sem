@@ -37,6 +37,32 @@ function normalizeDevArticle(article: Record<string, unknown>, index: number) {
   };
 }
 
+function normalizeDevFallbackArticle(article: Record<string, unknown>, index: number) {
+  return {
+    id: String(article.id ?? `${article.title ?? 'article'}-${index}`),
+    title: String(article.title ?? 'Untitled aerospace update'),
+    source: String(article.news_site ?? 'Spaceflight News'),
+    author: '',
+    imageUrl:
+      String(article.image_url ?? '') ||
+      'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?auto=format&fit=crop&w=1200&q=80',
+    publishedAt: String(article.published_at ?? article.updated_at ?? new Date().toISOString()),
+    description: String(article.summary ?? 'No short description was provided.'),
+    url: String(article.url ?? '#'),
+    category: 'Space',
+  };
+}
+
+async function fetchDevFallbackNews() {
+  const url = new URL('https://api.spaceflightnewsapi.net/v4/articles/');
+  url.searchParams.set('limit', '12');
+  url.searchParams.set('ordering', '-published_at');
+  const response = await fetch(url);
+  const data = (await response.json()) as { results?: Record<string, unknown>[] };
+  if (!response.ok || !Array.isArray(data.results)) throw new Error('Fallback news unavailable');
+  return data.results.slice(0, 12).map(normalizeDevFallbackArticle);
+}
+
 type LocalChatContext = {
   iss?: {
     current?: { latitude: number; longitude: number } | null;
@@ -51,6 +77,64 @@ type LocalChatBody = {
   message?: unknown;
   context?: LocalChatContext;
 };
+
+type LocalIssPayload = {
+  message: 'success';
+  timestamp: number;
+  iss_position: { latitude: string; longitude: string };
+};
+
+let localIssCache: { savedAt: number; payload: LocalIssPayload } | null = null;
+let localIssPending: Promise<LocalIssPayload> | null = null;
+
+function toLocalIssPayload(latitude: number, longitude: number, timestamp: number): LocalIssPayload {
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    !Number.isFinite(timestamp) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    throw new Error('Malformed ISS response');
+  }
+
+  return {
+    message: 'success',
+    timestamp,
+    iss_position: { latitude: String(latitude), longitude: String(longitude) },
+  };
+}
+
+async function fetchLocalIssPosition() {
+  if (localIssPending) return localIssPending;
+
+  localIssPending = (async () => {
+    try {
+      const apiResponse = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
+      const data = (await apiResponse.json()) as { latitude?: number; longitude?: number; timestamp?: number };
+      if (!apiResponse.ok) throw new Error('Primary ISS source unavailable');
+      return toLocalIssPayload(Number(data.latitude), Number(data.longitude), Number(data.timestamp));
+    } catch {
+      const fallbackResponse = await fetch('http://api.open-notify.org/iss-now.json');
+      const fallbackData = (await fallbackResponse.json()) as {
+        timestamp?: number;
+        iss_position?: { latitude?: string; longitude?: string };
+      };
+      if (!fallbackResponse.ok) throw new Error('Fallback ISS source unavailable');
+      return toLocalIssPayload(
+        Number(fallbackData.iss_position?.latitude),
+        Number(fallbackData.iss_position?.longitude),
+        Number(fallbackData.timestamp),
+      );
+    }
+  })().finally(() => {
+    localIssPending = null;
+  });
+
+  return localIssPending;
+}
 
 function fallbackAnswer(message: string, context: LocalChatContext) {
   const text = message.toLowerCase();
@@ -94,7 +178,13 @@ function localApiPlugin(env: Record<string, string>): Plugin {
     configureServer(server) {
       server.middlewares.use('/api/news', async (request, response) => {
         if (request.method !== 'GET') return sendJson(response, { error: 'Method not allowed' }, 405);
-        if (!env.NEWSDATA_API_KEY) return sendJson(response, { error: 'Missing NEWSDATA_API_KEY environment variable' }, 500);
+        if (!env.NEWSDATA_API_KEY) {
+          try {
+            return sendJson(response, { articles: await fetchDevFallbackNews(), source: 'fallback' });
+          } catch {
+            return sendJson(response, { error: 'Missing NEWSDATA_API_KEY environment variable' }, 500);
+          }
+        }
 
         const url = new URL('https://newsdata.io/api/1/news');
         url.searchParams.set('apikey', env.NEWSDATA_API_KEY);
@@ -102,38 +192,45 @@ function localApiPlugin(env: Record<string, string>): Plugin {
         url.searchParams.set('language', 'en');
         url.searchParams.set('size', '10');
 
-        const apiResponse = await fetch(url);
-        const data = (await apiResponse.json()) as {
-          status?: string;
-          message?: string;
-          results?: Record<string, unknown>[];
-        };
-        if (!apiResponse.ok || data.status === 'error') {
-          return sendJson(response, { error: data.message ?? 'Unable to fetch news' }, apiResponse.status || 502);
-        }
+        try {
+          const apiResponse = await fetch(url);
+          const data = (await apiResponse.json()) as {
+            status?: string;
+            message?: string;
+            results?: Record<string, unknown>[];
+          };
+          if (!apiResponse.ok || data.status === 'error' || !Array.isArray(data.results)) {
+            return sendJson(response, { articles: await fetchDevFallbackNews(), source: 'fallback' });
+          }
 
-        return sendJson(response, { articles: (data.results ?? []).map(normalizeDevArticle) });
+          return sendJson(response, { articles: data.results.map(normalizeDevArticle), source: 'newsdata' });
+        } catch {
+          try {
+            return sendJson(response, { articles: await fetchDevFallbackNews(), source: 'fallback' });
+          } catch {
+            return sendJson(response, { error: 'Unable to fetch news' }, 502);
+          }
+        }
       });
 
       server.middlewares.use('/api/iss-position', async (request, response) => {
         if (request.method !== 'GET') return sendJson(response, { error: 'Method not allowed' }, 405);
-        const apiResponse = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
-        const data = (await apiResponse.json()) as { latitude?: number; longitude?: number; timestamp?: number };
-
-        if (
-          !apiResponse.ok ||
-          typeof data.latitude !== 'number' ||
-          typeof data.longitude !== 'number' ||
-          typeof data.timestamp !== 'number'
-        ) {
-          return sendJson(response, { error: 'Unable to fetch ISS position' }, 502);
+        const now = Date.now();
+        if (localIssCache && now - localIssCache.savedAt < 12_000) {
+          return sendJson(response, localIssCache.payload);
         }
 
-        return sendJson(response, {
-          message: 'success',
-          timestamp: data.timestamp,
-          iss_position: { latitude: String(data.latitude), longitude: String(data.longitude) },
-        });
+        try {
+          const payload = await fetchLocalIssPosition();
+          localIssCache = { savedAt: Date.now(), payload };
+          return sendJson(response, payload);
+        } catch {
+          if (localIssCache && now - localIssCache.savedAt < 5 * 60_000) {
+            return sendJson(response, localIssCache.payload);
+          }
+
+          return sendJson(response, { error: 'ISS position temporarily unavailable' }, 503);
+        }
       });
 
       server.middlewares.use('/api/astronauts', async (request, response) => {

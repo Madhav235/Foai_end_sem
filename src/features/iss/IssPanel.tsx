@@ -17,7 +17,7 @@ export function IssPanel() {
         <div>
           <p className="section-kicker">Live orbit</p>
           <h2 className="section-title">International Space Station</h2>
-          <p className="mt-2 text-sm text-muted">Updated every 15 seconds. Last update: {updatedAt}</p>
+          <p className="mt-2 text-sm text-muted">Updated every 30 seconds. Last update: {updatedAt}</p>
         </div>
         <button className="secondary-button" onClick={() => void refreshIss()} disabled={iss.loading}>
           <RefreshCcw size={16} className={iss.loading ? 'animate-spin' : ''} />
